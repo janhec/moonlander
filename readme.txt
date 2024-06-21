@@ -21,3 +21,15 @@ In this version:
 
 So, the idea is that you can go on where I left off or even did ridiculous things, whatever.
 Have fun.
+
+Update 21-06-2024
+- added optional calculation methods: original, bugfixed, exact.
+- Applied exact method (optionally) to apply_thrust() as well.
+- used low positive altitude tolerance for switch off for all methods
+- changed continuation of low positive altitude tolerance to (goto) on_the_moon
+  instead of (goto) loop_until_on_the_moon.
+The latter may want to fly off and produce ugly results;
+the point is going straight down with engine switched off if the drop is small enough.
+The idea is then to measure this so accurately that impact velocity can be less than
+0.01 MPH owing to the minimal (or no) fall at the end of the last full-burn turn.
+- changed inputsui.txt to inputsuicideburns.txt with accurate inputs for all calculation methods.

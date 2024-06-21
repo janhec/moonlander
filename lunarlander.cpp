@@ -88,6 +88,9 @@ static bool find_parentprocess(std::string& fname);
 static double A, G, M, V, T, TF, X, EndAlt, EndSpeed, FR, EmptyMass, TimeRemain, SpecThrust;
 #define Fuel (M - EmptyMass)
 static bool echo_input = false, RedirectedInput = false;
+enum calcmethod { ORIGINAL, BUGFIXED, EXACT, UNDECIDED };
+static calcmethod CalcMethod{ UNDECIDED };
+
 
 // calculate speed, altitude at end of (current part of) the current turn.
 static void apply_thrust();
@@ -100,34 +103,37 @@ static int accept_yes_or_no();
 static bool accept_line(char **buffer, int *buffer_length);
 // Added key wait in case program is launched from e.g. explorer, not cmd etc, otherwise the ouput just disappears.
 // Checks as best as possible whether this is needed (against twice press a key).
-// The check is Windows only, since I could not find a portable method for determining parent program (name) - and then, what.
+// The check is Windows only, since I could not find a portable CalcMethod for determining parent program (name) - and then, what.
 #ifdef _WIN32
  static void waitkey();
 #endif
- enum calcmethod { ORIGINAL, BUGFIXED, EXACT, UNDECIDED };
- // Optional arguments:
- // --echo (see below)
- // calc(method)=[original|old || new|fixed || exact], default original. see message.
- int main(int argc, char **argv)
+// Optional arguments:
+// --echo (see below)
+// calc(CalcMethod)=[original|old || new|fixed || exact], default original. see message.
+
+static double getalt(const double t)
+{ return A - 0.5 * G * t * t - V * t - SpecThrust * ((t - M / FR) * log(1 - t * FR / M) - t); };
+
+int main(int argc, char **argv)
 {
     int turn = 0;
-    calcmethod method{ UNDECIDED };
     const char* calcmess = "original";   // default
     for (int ia = 1; ia < argc; ++ia)
     {   // If --echo is present, then write all input back to standard output.
         // (This is useful for testing with files as (redirected) input.)
         if (!echo_input) echo_input = _stricmp(argv[ia], "--echo") == 0;
         char* equals{ nullptr };
-        if (method == UNDECIDED && !_strnicmp(argv[ia], "calc", 4) && (equals = strchr(argv[ia], '=')) != nullptr)
+        if (CalcMethod == UNDECIDED && !_strnicmp(argv[ia], "calc", 4) && (equals = strchr(argv[ia], '=')) != nullptr)
         {
-            _strlwr(equals);
-            if (strstr(equals, "old") || strstr(equals,"orig")) { method = ORIGINAL; calcmess = "original"; }
-            else if (strstr(equals, "new") || strstr(equals,"fixed")) { method = BUGFIXED; calcmess = "bugfixed"; }
-            else if (strstr(equals, "exact")) { method = EXACT; calcmess = "exact"; }
+            _strlwr(++equals);
+            if (strstr(equals, "old") || strstr(equals,"orig")) { CalcMethod = ORIGINAL; calcmess = "original"; }
+            else if (strstr(equals, "new") || strstr(equals,"fixed") || !strncmp(equals,"bugfix",6))
+            { CalcMethod = BUGFIXED; calcmess = "bugfixed"; }
+            else if (strstr(equals, "exact")) { CalcMethod = EXACT; calcmess = "exact"; }
             else { printf("Do not understand %s\n", argv[ia]); return 1; }
         }
     }
-    if (method == UNDECIDED) method = ORIGINAL;
+    if (CalcMethod == UNDECIDED) CalcMethod = ORIGINAL;
     printf("Using the %s version for time to lowest point (zero speed)\n", calcmess);
     RedirectedInput = !_isatty(_fileno(stdin));
     if (RedirectedInput) echo_input = true;
@@ -181,14 +187,6 @@ static bool accept_line(char **buffer, int *buffer_length);
 
             if (V > 0 && EndSpeed < 0)
             {   // can only get here with power (FR) during the landing turn resulting in negative acceleration.
-                if (method == EXACT)
-                {
-                    std::function<double(double)> getalt = [](double t)
-                        { return A - 0.5 * G * t * t - V * t - SpecThrust * ((t - M / FR) * log(1 - t * FR / M) - t); };
-                    const double TF0 = brent::zero(0, TF, 1e-9, getalt);		// 3rd parameter is tolerance.
-                    if (TF > TF0) goto loop_until_on_the_moon;
-                }
-                else
                 for (int il81 = 0;;++il81) // 08.10 in original FOCAL code
                 {
                     // FOCAL-to-C gotcha: In FOCAL, multiplication has a higher // precedence than division.
@@ -206,9 +204,9 @@ static bool accept_line(char **buffer, int *buffer_length);
                     // You may want to leave out the addition of 0.05 sec, or apply it also in the bugfix.
                     TF = M * V / (SpecThrust * FR * (X + sqrt(X * X + V / SpecThrust))) + 0.05;
 #                 else
-                    if (method == ORIGINAL) TF = M * V / (SpecThrust * FR * (X + sqrt(X * X + V / SpecThrust))) + 0.05;
+                    if (CalcMethod == ORIGINAL) TF = M * V / (SpecThrust * FR * (X + sqrt(X * X + V / SpecThrust))) + 0.05;
 #                 endif
-                    if (method == BUGFIXED)   // if modern, overwrite TF with corrected formula
+                    if (CalcMethod == BUGFIXED)   // if modern, overwrite TF with corrected formula
                     {
 #                     ifdef _DEBUG
                         // try other solution. Didn't work sofar, consider deprecated.
@@ -216,16 +214,23 @@ static bool accept_line(char **buffer, int *buffer_length);
 #                     endif
                         TF = M * V / (SpecThrust * FR * (X + sqrt(X * X + 0.5 * V / SpecThrust)));
                     }
+                    else if (CalcMethod == EXACT)
+                         TF = brent::zero(0, TF, 1e-9, getalt);		// 3rd parameter is tolerance.
+
                     apply_thrust();
                     // choose between original <= 0 or <= small value which may lead to a good landing instead of an flyoff.
-                    if ((method == ORIGINAL && EndAlt <=0 ) || (method == BUGFIXED && EndAlt <= 0.00003858))
+                    //if ((CalcMethod == ORIGINAL && EndAlt <= 0) || (CalcMethod >= BUGFIXED && EndAlt <= 0.00003858))
+                    if (EndAlt <= 0.00003858)
                     {   // a perfect landing to be expected by turning of the engine at (very) low EndAlt.
                         // This also relieves small inaccuracies in the TF calculation.
                         if (EndAlt > 0)     // but smaller than or equal to 0.00003858
                         {   // just let it go, baby. It will be ok.
+                            // loop_until_on_the_moon may fail to converge (really a marginal fly-off).
                             TF = sqrt(2 * EndAlt / G);
-                            EndSpeed = TF * G;
-                            EndAlt = 0;
+                            V = EndSpeed = TF * G;
+                            A = EndAlt = 0;
+                            T += TF;
+                            goto on_the_moon;
                         }
                         goto loop_until_on_the_moon; // lowest point under surface, find conditions when hitting ground.
                     }
@@ -264,7 +269,7 @@ static bool accept_line(char **buffer, int *buffer_length);
 #         endif
             TF = 2 * A / (disc + V); // discriminant in denominator. This is expected to be consistently right.
             // If we calculate undershoot correction, A should be positive -> negative in quadratic equation (sidechange).
-            if (method == EXACT && quadratic(roots, 0.5 * acc, V, -A))     // return false in case of no real root(s)
+            if (CalcMethod == EXACT && quadratic(roots, 0.5 * acc, V, -A))     // return false in case of no real root(s)
                 TF = roots[roots[0] < 0];
             if (TF > 0) apply_thrust();
             else if (TF < 0) { EndSpeed += TF * acc; EndAlt = 0; TF = 0; }  // not expected.
@@ -279,9 +284,9 @@ static bool accept_line(char **buffer, int *buffer_length);
         T += TF;
 
     on_the_moon: // 05.10 in original FOCAL code
-        printf("\nON THE MOON AT   %8.2f SECS\n", T);
+        printf("\nON THE MOON AT   %8.3f SECS\n", T);
         X = 3600 * V;
-        printf("IMPACT VELOCITY: %8.2f M.P.H.\n", X);
+        printf("IMPACT VELOCITY: %8.3f M.P.H.\n", X);
         printf("FUEL LEFT:       %8.2f LBS\n", Fuel);
         if (X <= 1) puts("PERFECT LANDING !-(LUCKY)");
         else if (X <= 10) puts("GOOD LANDING-(COULD BE BETTER)");
@@ -317,10 +322,10 @@ static void apply_thrust()
 {
     const double Q = TF * FR / M, Q_2 = Q * Q, Q_3 = Q_2 * Q, Q_4 = Q_3 * Q, Q_5 = Q_4 * Q;
 
-    EndSpeed = V + G * TF + SpecThrust * log(1 - Q);        // exact, for comparison
+    const double endspeedExact = V + G * TF + SpecThrust * log(1 - Q);        // exact, for comparison
     // Using Taylor expansion, NB deltax is negative -> terms get the same sign, no sign altercation:
     EndSpeed = V + G * TF + SpecThrust * (-Q - Q_2 / 2 - Q_3 / 3 - Q_4 / 4 - Q_5 / 5);
-    EndAlt = A - G * TF * TF / 2 - V * TF;
+    double endaltExact = A - G * TF * TF / 2 - V * TF;
     if (Q > 0)
     {
         const auto a = FR / M;
@@ -328,10 +333,11 @@ static void apply_thrust()
         //auto lfunc = [a](const double t) { return log(1 - a * t); };
         //const auto y = simpson_rule<double, decltype(lfunc)>(0., TF, 10, lfunc);
         const auto z = (TF - 1 / a) * log(1 - Q) - TF;
-        EndAlt -= SpecThrust * z;       // exact.
+        endaltExact -= SpecThrust * z;       // exact.
     }
     // Taylor expansion integrated (t = 0 to TF), sum dA for gravity, starting speed and engine.
     EndAlt = A - G * TF * TF / 2 - V * TF + SpecThrust * TF * (Q / 2 + Q_2 / 6 + Q_3 / 12 + Q_4 / 20 + Q_5 / 30);
+    if (CalcMethod == EXACT) { EndSpeed = endspeedExact; EndAlt = endaltExact; }
 }
 
 // Read a floating-point value from stdin.
