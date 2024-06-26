@@ -10,6 +10,18 @@
 // Where I changed this (adding a break and continue in outer loop), it is not really much clearer,
 // but it allows me to use a loop counter which then can be tested (additional output yes/no).
 
+/*
+Martin C. Martin:
+One thing I noticed, if you put the bug back in so it underestimates the time to zero velocity,
+but make that 0.05 constant much lower, e.g. 0.0005, then I got it to land with a velocity of
+0.007886 M.P.H., using fuel @ t = 70 of 164.314709089.In the code that actually finds the zero altitude,
+I changed that constant to 0.0001.
+Might have taken unreasonably long on a PDP - 8 to do that many iterations.
+Also, I think the accuracy of the floating point was only between 5 and 6 decimal digits,
+whereas with double precision on modern hardware you get something like 14 to 15.
+But with those changes I do get a very gentle “perfect” landing in 148.429019 sec.
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
