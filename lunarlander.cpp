@@ -114,27 +114,75 @@ static bool accept_line(char **buffer, int *buffer_length);
 static double getalt(const double t)
 { return A - 0.5 * G * t * t - V * t - SpecThrust * ((t - M / FR) * log(1 - t * FR / M) - t); };
 
+static void telwhat(const char *argv0)
+{
+    const char* fn = strrchr(argv0, '\\');
+    if (!fn) fn = strrchr(argv0, '/');
+    if (!fn) fn = argv0; else ++fn;
+    fputs(fn, stdout);
+    if (strncmp(fn, "lunarlander", 11))
+        fputs(", aka lunarlander", stdout);
+    puts(
+        "written originally by Jim Storer in 1969,\n"
+        "shortly after the first moon landing, using Focal on a PDP8\n"
+        "and ported later to basic and C.\n"
+        "Lunarlander was by far the most famous and popular early computergame.\n"
+        "It is also quite hard to achieve a good landing by simply guessing inputs\n"
+        "The rise of modern OS'es, starting with unix, aided us by redirection, so we can\n"
+        "fire off more variations in input without having to press the keys each time.\n"
+        "Part of the difficulty of the game may result from slight inaccuracies in the\n"
+        "thrust application and more so, in the calculation of the lowest point when\n"
+        "there is enough thrust to cause ascending.\n"
+        "This happens occasionally and then a landing is assumed when the lowest\n"
+        "calculated altitude is less than or equal to zero, which occurs occasionally.\n"
+        "The more common case is a landing without such a speed reversal.\n"
+        "M. C. Martin published a blog to discuss a bug in the lowest point calculation.\n"
+        "In this code, the corrected code is present and can be used optionally.\n"
+        "Then we discussed whether a lowest point above but close to the surface can or\n"
+        "even should be regarded as a landing, especially when gravity (after engine\n"
+        "switch-off) would lead to a good or even perfect landing.\n"
+        "Calculation method can be specified by calc=[original|bugfix|exact]\n"
+        "(default original).\n"
+        "Exact means using the rocket equation with a logarithm for thrust application\n"
+        "and a primitive for the altitude calculation, rather than Taylor terms.\n"
+        "As in other ports, --echo prints input, which is useful with redirected input.\n"
+        "An additional output has been added at speed-reversal. Altitude is shown signed\n"
+        "to allow for a value in feet which is zero after rounding, but can be positive\n"
+        "causing a (temporary) fly-off and a subsequent hard landing.\n"
+        "Just to be clear: this code is meant for fun and experimentation.\n"
+        "The code serves no useful purpose, is free to use and modify and does not\n"
+        "require mention of this work.\n"
+        "See the code for links to the blog and the C-port used here as beginning.\n"
+    );
+}
+
 int main(int argc, char **argv)
 {
     int turn = 0;
     const char* calcmess = "original";   // default
+    bool dohelp = false;
     for (int ia = 1; ia < argc; ++ia)
     {   // If --echo is present, then write all input back to standard output.
         // (This is useful for testing with files as (redirected) input.)
-        if (!echo_input) echo_input = _stricmp(argv[ia], "--echo") == 0;
-        char* equals{ nullptr };
-        if (CalcMethod == UNDECIDED && !_strnicmp(argv[ia], "calc", 4) && (equals = strchr(argv[ia], '=')) != nullptr)
+        char * arg = _strlwr(argv[ia]);
+        if (strchr("-/", arg[0]))
         {
-            _strlwr(++equals);
+            while (*arg && !isalnum(*arg)) ++ arg;
+            if (*arg == 'h' || *arg == '?') dohelp = true;
+        }
+        if (!echo_input) echo_input = strcmp(arg, "--echo") == 0;
+        char* equals{ nullptr };
+        if (CalcMethod == UNDECIDED && !strncmp(arg, "calc", 4) && (equals = strchr(arg, '=')) != nullptr)
+        {
             if (strstr(equals, "old") || strstr(equals,"orig")) { CalcMethod = ORIGINAL; calcmess = "original"; }
             else if (strstr(equals, "new") || strstr(equals,"fixed") || !strncmp(equals,"bugfix",6))
             { CalcMethod = BUGFIXED; calcmess = "bugfixed"; }
             else if (strstr(equals, "exact")) { CalcMethod = EXACT; calcmess = "exact"; }
-            else { printf("Do not understand %s\n", argv[ia]); return 1; }
+            else { printf("Do not understand %s\n", arg); return 1; }
         }
     }
     if (CalcMethod == UNDECIDED) CalcMethod = ORIGINAL;
-    printf("Using the %s version for time to lowest point (zero speed)\n", calcmess);
+    if (!dohelp) printf("Using the %s version for time to lowest point (zero speed)\n", calcmess);
     RedirectedInput = !_isatty(_fileno(stdin));
     if (RedirectedInput) echo_input = true;
 
@@ -142,7 +190,11 @@ int main(int argc, char **argv)
     puts("YOU MAY RESET FUEL RATE FR EACH 10 SECS TO 0 OR ANY VALUE");
     puts("BETWEEN 8 & 200 LBS/SEC. YOU'VE 16000 LBS FUEL. ESTIMATED");
     puts("FREE FALL IMPACT TIME-120 SECS. CAPSULE WEIGHT-32500 LBS\n\n");
-
+    if (dohelp)
+    {
+        telwhat(argv[0]);
+        return 0;
+    }
     do // 01.20 in original FOCAL code
     {
         puts("FIRST RADAR CHECK COMING UP\n\n");
@@ -223,7 +275,7 @@ int main(int argc, char **argv)
                     if (EndAlt <= 0.00003858)
                     {   // a perfect landing to be expected by turning of the engine at (very) low EndAlt.
                         // This also relieves small inaccuracies in the TF calculation.
-                        if (EndAlt > 0)     // but smaller than or equal to 0.00003858
+                        if (EndAlt >= 0)     // but smaller than or equal to 0.00003858
                         {   // just let it go, baby. It will be ok.
                             // loop_until_on_the_moon may fail to converge (really a marginal fly-off).
                             TF = sqrt(2 * EndAlt / G);
