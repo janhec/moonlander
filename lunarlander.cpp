@@ -99,6 +99,7 @@ static bool find_parentprocess(std::string& fname);
 // Altitude at end of turn (mi), Speed at and of turn (mi/s), Time left in turn (s), Specific thrust (lbf/pound of fuel)
 static double A, G, M, V, T, TF, X, EndAlt, EndSpeed, FR, EmptyMass, TimeRemain, SpecThrust;
 #define Fuel (M - EmptyMass)
+static double maxdropheightft = 5280 * 0.00003858;
 static bool echo_input = false, RedirectedInput = false;
 enum calcmethod { ORIGINAL, BUGFIXED, EXACT, UNDECIDED };
 static calcmethod CalcMethod{ UNDECIDED };
@@ -181,20 +182,31 @@ int main(int argc, char **argv)
         {
             while (*arg && !isalnum(*arg)) ++ arg;
             if (*arg == 'h' || *arg == '?') dohelp = true;
+            if (!echo_input) echo_input = strcmp(arg, "--echo") == 0;
+            continue;
         }
-        if (!echo_input) echo_input = strcmp(arg, "--echo") == 0;
         char* equals{ nullptr };
-        if (CalcMethod == UNDECIDED && !strncmp(arg, "calc", 4) && (equals = strchr(arg, '=')) != nullptr)
+        if ((equals = strchr(arg, '=')) != nullptr)
         {
-            if (strstr(equals, "old") || strstr(equals,"orig")) { CalcMethod = ORIGINAL; calcmess = "original"; }
-            else if (strstr(equals, "new") || strstr(equals,"fixed") || !strncmp(equals,"bugfix",6))
-            { CalcMethod = BUGFIXED; calcmess = "bugfixed"; }
-            else if (strstr(equals, "exact")) { CalcMethod = EXACT; calcmess = "exact"; }
+            *equals++ = 0;
+            if (CalcMethod == UNDECIDED && !strncmp(arg, "calc", 4))
+            {
+                if (strstr(equals, "old") || strstr(equals, "orig")) { CalcMethod = ORIGINAL; calcmess = "original"; }
+                else if (strstr(equals, "new") || strstr(equals, "fixed") || !strncmp(equals, "bugfix", 6))
+                { CalcMethod = BUGFIXED; calcmess = "bugfixed"; }
+                else if (strstr(equals, "exact")) { CalcMethod = EXACT; calcmess = "exact"; }
+            }
+            else if (strstr(arg, "max") && strstr(arg, "drop"))
+            {
+                const int e = (int)strlen(arg) - 2;
+                const double x = atof(equals);
+                if (x == 0) maxdropheightft = 0;
+                else { if (e > 0) maxdropheightft = (strcmp(arg + e, "ft") ? 5280 : 1) * x; }
+            }
             else { printf("Do not understand %s\n", arg); return 1; }
         }
     }
     if (CalcMethod == UNDECIDED) CalcMethod = ORIGINAL;
-    if (!dohelp) printf("Using the %s version for time to lowest point (zero speed)\n", calcmess);
     RedirectedInput = !_isatty(_fileno(stdin));
     if (RedirectedInput) echo_input = true;
 
@@ -240,7 +252,7 @@ int main(int argc, char **argv)
             if (Fuel < .001) goto fuel_out;
             if (TimeRemain < .001) goto start_turn;
             // Additional output coming in well when having a flyoff or, contrarily, a landing when close to ground.
-            if (il31) printf("%11.3f%12.0f%+7.0f%15.2f%12.1f      FR  %.0lf\n", T, trunc(A), 5280 * (A - trunc(A)), 3600 * V, Fuel, FR);
+            if (il31) printf("%11.3f%12.0f%+7.0f%15.2f%12.1f      FR  %.6lf\n", T, trunc(A), 5280 * (A - trunc(A)), 3600 * V, Fuel, FR);
             TF = TimeRemain;
             if (TF * FR > Fuel) TF = Fuel / FR;
 
@@ -283,12 +295,13 @@ int main(int argc, char **argv)
 
                     apply_thrust();
                     // choose between original <= 0 or <= small value which may lead to a good landing instead of an flyoff.
-                    //if ((CalcMethod == ORIGINAL && EndAlt <= 0) || (CalcMethod >= BUGFIXED && EndAlt <= 0.00003858))
-                    if (EndAlt <= 0.00003858)
+                    if (EndAlt <= maxdropheightft / 5280.)
                     {   // a perfect landing to be expected by turning of the engine at (very) low EndAlt.
                         // This also relieves small inaccuracies in the TF calculation.
-                        if (EndAlt >= 0)     // but smaller than or equal to 0.00003858
-                        {   // just let it go, baby. It will be ok.
+                        update_lander_state();
+                        if (!il31) printf("%11.3f%12.0f%+7.1f%15.2f%12.1f      FR  %.6lf\n", T, trunc(A), 5280 * (A - trunc(A)), 3600 * EndSpeed, Fuel, FR);
+                        if (EndAlt >= 0)     // but smaller than or equal to maxdropheight
+                        {
                             // loop_until_on_the_moon may fail to converge (really a marginal fly-off).
                             TF = sqrt(2 * EndAlt / G);
                             V = EndSpeed = TF * G;
@@ -310,7 +323,7 @@ int main(int argc, char **argv)
             }
             update_lander_state();
         }
-        // The way here appears to be make an estimate without mass change (apply_thrust), then apply_thrust and
+        // The way here appears to be: make an estimate without mass change (apply_thrust), then apply_thrust and
         // hopefully not keep undershooting the surface. The equation is 0.5Gt2 + Vt = altitude (to be lost),
         // Some have mentioned a possible numerical problem (catastrophic cancellation).
         // I've added a robust quadratic solver, after which I cannot yet conclude to any such problem,
@@ -363,6 +376,7 @@ int main(int argc, char **argv)
             printf("IN FACT YOU BLASTED A BUGFIXED LUNAR CRATER %8.2f FT. DEEP\n", X * .277777);
         }
 
+        if (!dohelp) printf("(Calculated using the %s version for time to lowest point (zero speed))\n", calcmess);
         if (!RedirectedInput) puts("\nTRY AGAIN?"); else putchar('\n');
     } while (accept_yes_or_no() == 1);
 
@@ -417,6 +431,7 @@ static bool accept_double(double *value)
         free(buffer);
         return is_valid_input == 1;
     }
+    else if (RedirectedInput) { value = 0; return true; }
     return false;
 }
 
@@ -488,7 +503,7 @@ static void waitkey()
 //#     endif
     }
     // msvsmon.exe is the remote visual studio debugger, used for x86 and behaving differently from VsDebugConsole.exe
-    if ((parname == "explorer.exe" || parname.empty() || parname == "msvsmon.exe") && parname != "VsDebugConsole.exe")   // "msvsmon.exe"
+    if ((parname == "explorer.exe" || parname.empty() || parname == "msvsmon.exe" || parname == "devenv.exe") && parname != "VsDebugConsole.exe")   // "msvsmon.exe"
 #  endif
     { int r; fputs("Press a key", stderr); while (_kbhit()) r=_getch(); r=_getch(); }
 }
@@ -497,7 +512,8 @@ static void waitkey()
 // If unable to read input, calls exit(-1).
 static bool accept_line(char **buffer, int *buffer_length)
 {
-    if (getline(buffer, buffer_length, stdin) == -1) { fputs("\nEND OF INPUT\n", stderr); waitkey(); exit(-1); }
+    if (getline(buffer, buffer_length, stdin) == -1)
+    { fputs("\nEND OF INPUT\n", stderr); return false; }
     auto e = strlen(*buffer);
     while (e > 0 && isspace((*buffer)[--e])) (*buffer)[e] = 0;
     if (echo_input) fputs(*buffer,stdout);
